@@ -1,0 +1,1153 @@
+﻿<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>A-Frame Space Planets</title>
+    <script src="https://aframe.io/releases/1.6.0/aframe.min.js"></script>
+    <script>
+      AFRAME.registerComponent("starfield", {
+        init: function () {
+          var group = document.createElement("a-entity");
+          for (var i = 0; i < 500; i += 1) {
+            var star = document.createElement("a-sphere");
+            var radius = 70;
+            var phi = Math.random() * Math.PI * 2;
+            var costheta = Math.random() * 2 - 1;
+            var theta = Math.acos(costheta);
+            var x = radius * Math.sin(theta) * Math.cos(phi);
+            var y = radius * Math.sin(theta) * Math.sin(phi);
+            var z = radius * Math.cos(theta);
+
+            star.setAttribute("position", x + " " + y + " " + z);
+            star.setAttribute("radius", 0.06 + Math.random() * 0.06);
+            star.setAttribute("color", "#ffffff");
+            star.setAttribute("material", "shader: flat; emissive: #ffffff; emissiveIntensity: 1;");
+            group.appendChild(star);
+          }
+          this.el.appendChild(group);
+        },
+      });
+
+      // 매 접속마다 기준 색조(baseHue)를 무작위로 선택하고 30마리에 맞춰 색상이 절대 겹치지 않게 30분할
+      var baseHue = Math.random();
+
+      AFRAME.registerComponent("random-chair-color", {
+        schema: {
+          index: { type: "int", default: 0 },
+        },
+        init: function () {
+          var el = this.el;
+          var myIndex = this.data.index;
+
+          // 색상환(360도)에서 12도(1/30)씩 정확히 등분하여 30마리 고슴도치 색상이 항상 다르고 뚜렷하게 대비되도록 설정
+          var hue = (baseHue + myIndex / 30.0) % 1.0;
+          var randomColor = new THREE.Color().setHSL(hue, 0.9, 0.55);
+
+          el.addEventListener("model-loaded", function (e) {
+            var model = e.detail.model || el.getObject3D("mesh");
+            if (!model) return;
+
+            model.traverse(function (node) {
+              if (node.isMesh && node.material) {
+                // 각 의자마다 독립적인 머티리얼 복제
+                node.material = node.material.clone();
+                node.material.color.copy(randomColor);
+                node.material.needsUpdate = true;
+              }
+            });
+          });
+          el.addEventListener("model-error", function (e) {
+            console.error("3D 모델 로드 실패:", e.detail);
+          });
+        },
+      });
+
+      // 실시간으로 색상이 계속 바뀌는 홀로그램 그라데이션 셰이더
+      AFRAME.registerShader("hologram-sky", {
+        schema: {
+          time: { type: "time", is: "uniform" },
+        },
+        vertexShader: [
+          "varying vec2 vUv;",
+          "void main() {",
+          "  vUv = uv;",
+          "  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);",
+          "}",
+        ].join("\n"),
+        fragmentShader: [
+          "precision mediump float;",
+          "varying vec2 vUv;",
+          "uniform float time;",
+          "",
+          "// 끊임없이 모든 네온 스펙트럼(시안, 블루, 바이올렛, 마젠타, 오렌지, 그린)을 순환하는 코사인 팔레트",
+          "vec3 hologramPalette(float t) {",
+          "  vec3 a = vec3(0.5, 0.5, 0.5);",
+          "  vec3 b = vec3(0.5, 0.5, 0.5);",
+          "  vec3 c = vec3(1.0, 1.0, 1.0);",
+          "  vec3 d = vec3(0.00, 0.33, 0.67);",
+          "  return a + b * cos(6.28318 * (c * t + d));",
+          "}",
+          "",
+          "void main() {",
+          "  // 왼쪽에서 오른쪽으로 (vUv.x * 1.8) 그라데이션 + 실시간으로 색상이 끊임없이 계속 바뀌도록 가속(time * 0.0009)",
+          "  float t = vUv.x * 1.8 - time * 0.0009;",
+          "  vec3 col = hologramPalette(t);",
+          "",
+          "  // 홀로그램 고유의 미세 수평 주사선(Scanline)",
+          "  float scanline = 0.84 + 0.16 * sin(vUv.y * 650.0);",
+          "",
+          "  // 빛의 물결(홀로그램 파동 펄스) 추가",
+          "  float wave = 0.06 * sin(vUv.x * 12.0 + time * 0.003);",
+          "",
+          "  // 색상 변화가 한눈에 잘 들어오면서도 우주 공간과 어울리는 깊이 있는 톤",
+          "  vec3 finalColor = (col + wave) * scanline * 0.42;",
+          "  gl_FragColor = vec4(finalColor, 1.0);",
+          "}",
+        ].join("\n"),
+      });
+
+      // 위에서 아래로 은은하고 투명하게 내리쬐는 빛줄기 제어 컴포넌트
+      AFRAME.registerComponent("moving-lights", {
+        init: function () {
+          var el = this.el;
+          // 투명한 빛에 어울리는 청아하고 맑은 파스텔/크리스탈 색상 팔레트
+          var colors = [
+            "#a5f3fc", // 맑은 크리스탈 시안
+            "#e9d5ff", // 소프트 라벤더
+            "#ffffff", // 퓨어 화이트
+            "#c4b5fd", // 라이트 바이올렛
+            "#fbcfe8", // 소프트 로즈
+            "#a7f3d0", // 은은한 민트 에메랄드
+            "#fef08a", // 샴페인 골드
+            "#bae6fd"  // 스카이 블루
+          ];
+          var light = el.querySelector("[light]");
+          var cone = el.querySelector("a-cone");
+          var bulb = el.querySelector(".bulb");
+
+          setInterval(function () {
+            var c = colors[Math.floor(Math.random() * colors.length)];
+            // 은은하고 부드러운 빛 강도
+            var intensity = 2.2 + Math.random() * 2.0;
+            // 뒤쪽 오브젝트가 깨끗하게 비치는 맑고 투명한 투명도 (0.06 ~ 0.13)
+            var opacity = 0.06 + Math.random() * 0.07;
+
+            if (light) {
+              light.setAttribute("light", "color", c);
+              light.setAttribute("light", "intensity", intensity);
+            }
+            if (cone) {
+              cone.setAttribute("material", "color", c);
+              cone.setAttribute("material", "opacity", opacity);
+            }
+            if (bulb) {
+              bulb.setAttribute("material", "color", c);
+              bulb.setAttribute("material", "emissive", c);
+            }
+          }, 400 + Math.random() * 300);
+        },
+      });
+
+      // 선명하고 또렷하게 읽히는 네온 "★ 고슴도치 클럽 ★" 텍스처 컴포넌트
+      AFRAME.registerComponent("neon-text-sign", {
+        init: function () {
+          var el = this.el;
+          var canvas = document.createElement("canvas");
+          canvas.width = 1024;
+          canvas.height = 256;
+          var ctx = canvas.getContext("2d");
+
+          var texture = new THREE.CanvasTexture(canvas);
+          texture.minFilter = THREE.LinearFilter;
+          texture.magFilter = THREE.LinearFilter;
+
+          // NormalBlending을 사용하여 텍스트가 하얗게 타지 않고 선명한 색감과 테두리가 또렷하게 유지됨
+          var material = new THREE.MeshBasicMaterial({
+            map: texture,
+            transparent: true,
+            side: THREE.DoubleSide,
+            depthWrite: false,
+          });
+
+          var applyMaterial = function () {
+            var mesh = el.getObject3D("mesh");
+            if (mesh) {
+              mesh.material = material;
+            }
+          };
+          applyMaterial();
+          el.addEventListener("object3dset", applyMaterial);
+
+          var hue = 0;
+          function render() {
+            hue = (hue + 0.003) % 1.0;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // 쨍하고 비비드한 네온 컬러 (채도 100%, 명도 58%)
+            var neonColor1 = new THREE.Color().setHSL(hue, 1.0, 0.58);
+            var neonHex1 = "#" + neonColor1.getHexString();
+            var neonColor2 = new THREE.Color().setHSL((hue + 0.18) % 1.0, 1.0, 0.62);
+            var neonHex2 = "#" + neonColor2.getHexString();
+
+            var text = "★ 고슴도치 클럽 ★";
+            var x = canvas.width / 2;
+            var y = canvas.height / 2;
+
+            ctx.font = "900 86px 'Malgun Gothic', 'Apple SD Gothic Neo', 'Pretendard', sans-serif";
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+
+            // 1단계: 어떤 밝은 배경에서도 글자가 또렷하게 읽히도록 두꺼운 다크 백드롭 아웃라인
+            ctx.shadowBlur = 0;
+            ctx.lineWidth = 22;
+            ctx.strokeStyle = "rgba(3, 7, 18, 0.96)";
+            ctx.lineJoin = "round";
+            ctx.strokeText(text, x, y);
+
+            // 2단계: 쨍하고 화려한 네온 컬러 외곽 글로우 (번짐)
+            var pulse = Math.sin(Date.now() * 0.008);
+            var blur = 24 + pulse * 10 + (Math.random() > 0.85 ? Math.random() * 12 : 0);
+            ctx.shadowColor = neonHex1;
+            ctx.shadowBlur = blur;
+            ctx.lineWidth = 10;
+            ctx.strokeStyle = neonHex1;
+            ctx.strokeText(text, x, y);
+
+            // 3단계: 글자 본체를 하얀색 대신 화려한 비비드 네온 그라데이션으로 꽉 채움
+            var grad = ctx.createLinearGradient(x - 320, y, x + 320, y);
+            grad.addColorStop(0, neonHex1);
+            grad.addColorStop(0.5, "#ffffff"); // 중앙에만 얇게 반짝이는 빛줄기
+            grad.addColorStop(1, neonHex2);
+
+            ctx.shadowBlur = 10;
+            ctx.shadowColor = neonHex1;
+            ctx.fillStyle = grad;
+            ctx.fillText(text, x, y);
+
+            // 4단계: 선명한 얇은 림 라이트 (글자 획을 칼처럼 또렷하게 만듦)
+            ctx.shadowBlur = 0;
+            ctx.lineWidth = 2.5;
+            ctx.strokeStyle = "#ffffff";
+            ctx.strokeText(text, x, y);
+
+            texture.needsUpdate = true;
+            requestAnimationFrame(render);
+          }
+          render();
+        },
+      });
+
+      // 대왕 고슴도치 주변을 도는 황금빛 "👑 대왕고슴도치왕 👑" 텍스트 컴포넌트
+      AFRAME.registerComponent("king-text-sign", {
+        init: function () {
+          var el = this.el;
+          var canvas = document.createElement("canvas");
+          canvas.width = 1024;
+          canvas.height = 256;
+          var ctx = canvas.getContext("2d");
+
+          var texture = new THREE.CanvasTexture(canvas);
+          texture.minFilter = THREE.LinearFilter;
+          texture.magFilter = THREE.LinearFilter;
+
+          var material = new THREE.MeshBasicMaterial({
+            map: texture,
+            transparent: true,
+            side: THREE.DoubleSide,
+            depthWrite: false,
+          });
+
+          var applyMaterial = function () {
+            var mesh = el.getObject3D("mesh");
+            if (mesh) {
+              mesh.material = material;
+            }
+          };
+          applyMaterial();
+          el.addEventListener("object3dset", applyMaterial);
+
+          function render() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            var pulse = Math.sin(Date.now() * 0.008);
+            var goldHex = "#ffd700";
+            var goldLightHex = "#fff59d";
+
+            var text = "👑 대왕고슴도치왕 👑";
+            var x = canvas.width / 2;
+            var y = canvas.height / 2;
+
+            ctx.font = "900 84px 'Malgun Gothic', 'Apple SD Gothic Neo', 'Pretendard', sans-serif";
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+
+            // 1단계: 짙은 다크 아웃라인 (선명한 가독성 확보)
+            ctx.shadowBlur = 0;
+            ctx.lineWidth = 22;
+            ctx.strokeStyle = "rgba(3, 7, 18, 0.96)";
+            ctx.lineJoin = "round";
+            ctx.strokeText(text, x, y);
+
+            // 2단계: 황금빛 네온 외곽 글로우
+            var blur = 24 + pulse * 10;
+            ctx.shadowColor = goldHex;
+            ctx.shadowBlur = blur;
+            ctx.lineWidth = 10;
+            ctx.strokeStyle = goldHex;
+            ctx.strokeText(text, x, y);
+
+            // 3단계: 찬란한 황금빛 그라데이션 채우기
+            var grad = ctx.createLinearGradient(x - 300, y, x + 300, y);
+            grad.addColorStop(0, goldHex);
+            grad.addColorStop(0.5, "#ffffff"); // 중앙 다이아몬드 골드 하이라이트
+            grad.addColorStop(1, goldLightHex);
+
+            ctx.shadowBlur = 12;
+            ctx.shadowColor = goldHex;
+            ctx.fillStyle = grad;
+            ctx.fillText(text, x, y);
+
+            // 4단계: 날카로운 림 라이트 마감
+            ctx.shadowBlur = 0;
+            ctx.lineWidth = 2.5;
+            ctx.strokeStyle = "#ffffff";
+            ctx.strokeText(text, x, y);
+
+            texture.needsUpdate = true;
+            requestAnimationFrame(render);
+          }
+          render();
+        },
+      });
+
+      // 귀여운 작은 입체 5각별(★) 3D 지오메트리 생성 함수
+      function createLittleStarGeometry() {
+        var shape = new THREE.Shape();
+        var points = 5;
+        var outerRadius = 0.12; // 앙증맞고 작은 별 크기
+        var innerRadius = 0.052;
+        for (var i = 0; i < points * 2; i++) {
+          var r = i % 2 === 0 ? outerRadius : innerRadius;
+          var a = (i / (points * 2)) * Math.PI * 2 - Math.PI / 2;
+          var x = Math.cos(a) * r;
+          var y = Math.sin(a) * r;
+          if (i === 0) shape.moveTo(x, y);
+          else shape.lineTo(x, y);
+        }
+        shape.closePath();
+
+        var extrudeSettings = {
+          depth: 0.025,
+          bevelEnabled: true,
+          bevelSegments: 2,
+          steps: 1,
+          bevelSize: 0.012,
+          bevelThickness: 0.012,
+        };
+        var geo = new THREE.ExtrudeGeometry(shape, extrudeSettings);
+        geo.center(); // 회전 축을 별 정중앙으로 정렬
+        return geo;
+      }
+
+      // 공이 아니라 진짜 작은 입체 5각 별(★)들이 날아다니는 컴포넌트
+      AFRAME.registerComponent("roaming-stars", {
+        init: function () {
+          var rig = this.el;
+          var starGeo = createLittleStarGeometry();
+          var starColors = [
+            "#fffb00", // 샛노란 골드 별
+            "#ffffff", // 영롱한 다이아몬드 화이트 별
+            "#67e8f9", // 청아한 크리스탈 시안 별
+            "#f472b6", // 사랑스러운 네온 핑크 별
+            "#a7f3d0", // 맑은 에메랄드 별
+            "#c084fc", // 신비로운 라벤더 별
+          ];
+
+          for (var i = 0; i < 20; i++) {
+            var orbit = document.createElement("a-entity");
+
+            // 360도 전 방향에 고르게 분산된 시작 각도
+            var angle = i * 18 + (Math.random() * 6 - 3);
+            var isReverse = i % 3 === 0;
+            var toAngle = isReverse ? angle - 360 : angle + 360;
+
+            var tiltX = -35 + Math.random() * 70;
+            var tiltZ = -35 + Math.random() * 70;
+            var dur = 3200 + Math.random() * 5200;
+
+            orbit.setAttribute("rotation", tiltX + " " + angle + " " + tiltZ);
+            orbit.setAttribute(
+              "animation",
+              "property: rotation; to: " +
+                tiltX +
+                " " +
+                toAngle +
+                " " +
+                tiltZ +
+                "; loop: true; dur: " +
+                dur +
+                "; easing: linear;"
+            );
+
+            // 공이 아니라 진짜 3D 입체 5각 별(★) 엔티티 생성
+            var starEl = document.createElement("a-entity");
+            var radius = 2.4 + (i % 6) * 0.85 + Math.random() * 0.4;
+            var y = -1.1 + Math.random() * 2.2;
+            var color = starColors[i % starColors.length];
+
+            starEl.setAttribute("position", radius + " " + y + " 0");
+
+            var starMesh = new THREE.Mesh(
+              starGeo,
+              new THREE.MeshBasicMaterial({
+                color: new THREE.Color(color),
+                side: THREE.DoubleSide,
+              })
+            );
+            starEl.setObject3D("mesh", starMesh);
+
+            // 별(★) 자체가 뾰족뾰족 빙글빙글 스스로 자전하는 스핀 애니메이션
+            var spinDur = 1200 + Math.random() * 1500;
+            starEl.setAttribute(
+              "animation__spin",
+              "property: rotation; to: 360 360 360; loop: true; dur: " +
+                spinDur +
+                "; easing: linear;"
+            );
+
+            // 반짝반짝 숨쉬듯 반짝이는 트윙클 애니메이션
+            var twinkleDur = 450 + Math.random() * 600;
+            starEl.setAttribute(
+              "animation__twinkle",
+              "property: scale; to: 1.5 1.5 1.5; dir: alternate; loop: true; dur: " +
+                twinkleDur +
+                "; easing: easeInOutSine;"
+            );
+
+            orbit.appendChild(starEl);
+            rig.appendChild(orbit);
+          }
+        },
+      });
+
+      // 마우스 휠로 부드럽게 확대/축소(Zoom In / Zoom Out)하는 컴포넌트
+      AFRAME.registerComponent("wheel-zoom", {
+        schema: {
+          minFov: { type: "number", default: 25 },
+          maxFov: { type: "number", default: 110 },
+          step: { type: "number", default: 4.5 },
+        },
+        init: function () {
+          var el = this.el;
+          var data = this.data;
+          var targetFov = 80;
+          var currentFov = 80;
+
+          window.addEventListener(
+            "wheel",
+            function (e) {
+              if (e.deltaY < 0) {
+                targetFov = Math.max(data.minFov, targetFov - data.step);
+              } else {
+                targetFov = Math.min(data.maxFov, targetFov + data.step);
+              }
+            },
+            { passive: true }
+          );
+
+          this.tick = function () {
+            if (Math.abs(currentFov - targetFov) > 0.05) {
+              currentFov += (targetFov - currentFov) * 0.16;
+              var cam = el.getObject3D("camera");
+              if (cam) {
+                cam.fov = currentFov;
+                cam.updateProjectionMatrix();
+              }
+              el.setAttribute("camera", "fov", currentFov);
+            }
+          };
+        },
+      });
+
+      // 대왕고슴도치 일체형 플레이어 컨트롤러 (1인칭 시작 ⇄ 우클릭 시 3인칭 제3자 시점)
+      AFRAME.registerComponent("king-hedgehog-controller", {
+        init: function () {
+          var playerRig = this.el;
+          var cameraAnchor = document.querySelector("#camera-anchor");
+          var cameraEl = document.querySelector("#player-camera");
+          var keys = {};
+          var isThirdPerson = false; // 기본 시작: 내가 대왕고슴도치가 된 1인칭 시점!
+
+          // 키보드 입력 감지 (방향키 및 WASD, Space/Shift)
+          window.addEventListener("keydown", function (e) {
+            keys[e.code] = true;
+          });
+          window.addEventListener("keyup", function (e) {
+            keys[e.code] = false;
+          });
+
+          // 시점 설정 함수
+          function updateCameraView(animated) {
+            if (isThirdPerson) {
+              // 3인칭 (제3자 시점: 등 뒤 위쪽에서 대왕고슴도치를 내려다봄)
+              if (animated) {
+                cameraAnchor.setAttribute("animation__pos", {
+                  property: "position",
+                  to: "0 4.0 -7.2",
+                  dur: 600,
+                  easing: "easeOutCubic",
+                });
+                cameraAnchor.setAttribute("animation__rot", {
+                  property: "rotation",
+                  to: "-14 180 0",
+                  dur: 600,
+                  easing: "easeOutCubic",
+                });
+              } else {
+                cameraAnchor.setAttribute("position", "0 4.0 -7.2");
+                cameraAnchor.setAttribute("rotation", "-14 180 0");
+              }
+            } else {
+              // 1인칭 (내가 대왕고슴도치가 된 시점! 고슴도치 이마/눈높이 위치)
+              if (animated) {
+                cameraAnchor.setAttribute("animation__pos", {
+                  property: "position",
+                  to: "0 1.2 2.3",
+                  dur: 600,
+                  easing: "easeOutCubic",
+                });
+                cameraAnchor.setAttribute("animation__rot", {
+                  property: "rotation",
+                  to: "0 0 0",
+                  dur: 600,
+                  easing: "easeOutCubic",
+                });
+              } else {
+                cameraAnchor.setAttribute("position", "0 1.2 2.3");
+                cameraAnchor.setAttribute("rotation", "0 0 0");
+              }
+            }
+          }
+          updateCameraView(false);
+
+          // 마우스 우클릭 시: 1인칭 ⇄ 3인칭 제3자 시점 토글
+          window.addEventListener("contextmenu", function (e) {
+            e.preventDefault(); // 기본 우클릭 메뉴 차단
+            isThirdPerson = !isThirdPerson;
+            updateCameraView(true);
+          });
+
+          // 매 프레임 이동 및 시선 동기화
+          this.tick = function (time, delta) {
+            if (!delta) return;
+            var dt = Math.min(delta / 1000, 0.1);
+            var moveSpeed = 7.5;  // 비행/이동 속도
+            var turnSpeed = 90.0; // 회전 속도
+
+            var rot = playerRig.getAttribute("rotation") || { x: 0, y: 0, z: 0 };
+            var pos = playerRig.getAttribute("position") || { x: 0, y: 6.2, z: 0 };
+
+            // 1) 마우스 드래그 시선 동기화: 마우스로 돌린 각도를 대왕고슴도치 몸체에 반영
+            var look = cameraEl.components["look-controls"];
+            if (look && look.yawObject) {
+              var deltaYaw = look.yawObject.rotation.y;
+              if (Math.abs(deltaYaw) > 0.0001) {
+                // 1인칭일 때는 마우스 수평 회전을 대왕고슴도치 몸체 회전으로 직접 전환
+                if (!isThirdPerson) {
+                  rot.y += THREE.MathUtils.radToDeg(deltaYaw);
+                  look.yawObject.rotation.y = 0;
+                }
+              }
+            }
+
+            // 2) 키보드 방향키 회전 (←, →, A, D)
+            if (keys["ArrowLeft"] || keys["KeyA"]) {
+              rot.y += turnSpeed * dt;
+            }
+            if (keys["ArrowRight"] || keys["KeyD"]) {
+              rot.y -= turnSpeed * dt;
+            }
+
+            // 3) 전진 / 후진 (↑, ↓, W, S) -> 대왕고슴도치가 바라보는 방향(+Z)으로 직진
+            var rad = THREE.MathUtils.degToRad(rot.y);
+            var fwdX = Math.sin(rad);
+            var fwdZ = Math.cos(rad);
+            var isMoving = false;
+
+            if (keys["ArrowUp"] || keys["KeyW"]) {
+              pos.x += fwdX * moveSpeed * dt;
+              pos.z += fwdZ * moveSpeed * dt;
+              isMoving = true;
+            }
+            if (keys["ArrowDown"] || keys["KeyS"]) {
+              pos.x -= fwdX * moveSpeed * dt;
+              pos.z -= fwdZ * moveSpeed * dt;
+              isMoving = true;
+            }
+
+            // 4) 상승 / 하강 (Space, E / Shift, Q)
+            if (keys["Space"] || keys["KeyE"]) {
+              pos.y += moveSpeed * 0.75 * dt;
+            }
+            if (keys["ShiftLeft"] || keys["KeyQ"]) {
+              pos.y = Math.max(0.6, pos.y - moveSpeed * 0.75 * dt);
+            }
+
+            // 5) 생동감 넘치는 비행 틸트 & 둥실둥실 모션
+            if (isMoving) {
+              rot.z = Math.sin(time * 0.01) * 3.5;
+              rot.x = 2.5;
+            } else {
+              rot.z *= 0.88;
+              rot.x = Math.sin(time * 0.002) * 1.8;
+            }
+
+            playerRig.setAttribute("rotation", rot);
+            playerRig.setAttribute("position", pos);
+          };
+        },
+      });
+
+      window.addEventListener("DOMContentLoaded", function () {
+        if (window.location.protocol === "file:") {
+          var notice = document.createElement("div");
+          notice.style.position = "fixed";
+          notice.style.top = "16px";
+          notice.style.left = "50%";
+          notice.style.transform = "translateX(-50%)";
+          notice.style.backgroundColor = "rgba(220, 38, 38, 0.9)";
+          notice.style.color = "#ffffff";
+          notice.style.padding = "12px 20px";
+          notice.style.borderRadius = "8px";
+          notice.style.fontFamily = "sans-serif";
+          notice.style.fontSize = "14px";
+          notice.style.zIndex = "999999";
+          notice.style.boxShadow = "0 4px 12px rgba(0,0,0,0.5)";
+          notice.style.textAlign = "center";
+          notice.innerHTML =
+            "<strong>⚠️ 3D 모델(GLB) 로딩 안내</strong><br>" +
+            "브라우저 보안(CORS) 정책상 <code>file://</code> 경로에서는 3D 모델 파일이 로드되지 않습니다.<br>" +
+            "VS Code의 <strong>Live Server</strong>나 로컬 웹 서버(http://...) 환경에서 실행해 주세요.";
+          document.body.appendChild(notice);
+        }
+      });
+    </script>
+    <style>
+      html,
+      body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #020617;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- 조작 안내 가이드 바 -->
+    <div style="position: fixed; bottom: 18px; left: 18px; background: rgba(3, 7, 18, 0.82); color: #f1f5f9; padding: 10px 18px; border-radius: 10px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 13.5px; z-index: 999999; border: 1px solid rgba(255, 255, 255, 0.2); backdrop-filter: blur(8px); box-shadow: 0 4px 20px rgba(0,0,0,0.5); pointer-events: none; display: flex; align-items: center; gap: 10px;">
+      <span>🎮 <strong>방향키 / WASD</strong>: 대왕고슴도치 조종 (Space: 상승 / Shift: 하강)</span>
+      <span style="color: #64748b;">|</span>
+      <span>🖱️ <strong>마우스 우클릭</strong>: 1인칭 ⇄ 3인칭(제3자) 시점 전환</span>
+      <span style="color: #64748b;">|</span>
+      <span>🔄 <strong>휠</strong>: 줌인/줌아웃</span>
+      <span style="color: #64748b;">|</span>
+      <span>👆 <strong>드래그</strong>: 둘러보기</span>
+    </div>
+
+    <a-scene>
+      <a-assets timeout="10000">
+        <a-asset-item id="hedgehog-model" src="hedgehog.glb"></a-asset-item>
+      </a-assets>
+
+      <!-- 왼쪽에서 오른쪽으로 흐르는 홀로그램 그라데이션 하늘 배경 -->
+      <a-sky material="shader: hologram-sky"></a-sky>
+
+      <a-entity starfield></a-entity>
+
+      <!-- 기본 환경 조명 -->
+      <a-entity light="type: ambient; color: #ffffff; intensity: 1.5"></a-entity>
+      <a-entity
+        light="type: directional; color: #ffffff; intensity: 2.0"
+        position="2 4 4"
+      ></a-entity>
+      <a-entity
+        light="type: point; color: #ffffff; intensity: 1.5; distance: 90"
+        position="0 6 6"
+      ></a-entity>
+
+      <!-- ==================== 위에서 아래로 내리쬐는 투명한 빛 (Top-Down Light Shafts) ==================== -->
+      <!-- 1. 중앙 상단 메인 라이트 빔 (위에서 아래로 수직 조사) -->
+      <a-entity position="0 9 0" moving-lights
+        animation="property: rotation; to: 3 6 -3; dir: alternate; loop: true; dur: 4500; easing: easeInOutSine">
+        <a-entity light="type: spot; color: #ffffff; intensity: 3.5; angle: 36; penumbra: 0.6; distance: 30" rotation="-90 0 0"></a-entity>
+        <a-cone position="0 -8 0" radius-bottom="4.0" radius-top="0.1" height="16" open-ended="true"
+          material="color: #ffffff; opacity: 0.08; transparent: true; blending: additive; depthWrite: false; side: double; shader: flat">
+        </a-cone>
+      </a-entity>
+
+      <!-- 2. 좌상단 핀라이트 (위에서 아래로 살짝 안쪽을 비추며 우아하게 스윙) -->
+      <a-entity position="-3.5 8.5 0.5" moving-lights
+        animation="property: rotation; to: -6 0 -18; dir: alternate; loop: true; dur: 3800; easing: easeInOutSine">
+        <a-entity light="type: spot; color: #a5f3fc; intensity: 3.0; angle: 30; penumbra: 0.6; distance: 28" rotation="-85 0 0"></a-entity>
+        <a-cone position="0 -7.5 0" radius-bottom="3.2" radius-top="0.08" height="15" open-ended="true"
+          material="color: #a5f3fc; opacity: 0.08; transparent: true; blending: additive; depthWrite: false; side: double; shader: flat">
+        </a-cone>
+      </a-entity>
+
+      <!-- 3. 우상단 핀라이트 (위에서 아래로 살짝 안쪽을 비추며 우아하게 스윙) -->
+      <a-entity position="3.5 8.5 0.5" moving-lights
+        animation="property: rotation; to: 6 0 18; dir: alternate; loop: true; dur: 3600; easing: easeInOutSine">
+        <a-entity light="type: spot; color: #e9d5ff; intensity: 3.0; angle: 30; penumbra: 0.6; distance: 28" rotation="-85 0 0"></a-entity>
+        <a-cone position="0 -7.5 0" radius-bottom="3.2" radius-top="0.08" height="15" open-ended="true"
+          material="color: #e9d5ff; opacity: 0.08; transparent: true; blending: additive; depthWrite: false; side: double; shader: flat">
+        </a-cone>
+      </a-entity>
+
+      <!-- ==================== 반짝반짝 빙글빙글 돌아가는 "고슴도치 클럽" 네온 사인 ==================== -->
+      <!-- 1. 중앙 상단 360도 회전 네온 간판 (십자 입체 구조) -->
+      <a-entity position="0 4.2 0"
+        animation="property: rotation; to: 0 360 0; loop: true; dur: 8500; easing: linear;">
+        <a-plane width="7.2" height="1.8" neon-text-sign></a-plane>
+        <a-plane width="7.2" height="1.8" rotation="0 90 0" neon-text-sign></a-plane>
+      </a-entity>
+
+      <!-- ==================== 플레이어블 대왕 고슴도치 (직접 방향키 조종 가능) ==================== -->
+      <a-entity id="king-hedgehog" position="0 6.2 0" king-hedgehog-controller>
+        <!-- 압도적인 크기의 대왕 고슴도치 본체 -->
+        <a-entity
+          gltf-model="#hedgehog-model"
+          scale="2.7 2.7 2.7"
+        ></a-entity>
+        <!-- 대왕 고슴도치 전용 황금빛 후광 조명 -->
+        <a-entity light="type: point; color: #ffd700; intensity: 4.5; distance: 20"></a-entity>
+
+        <!-- 대왕 고슴도치 주변을 360도 빙글빙글 도는 "👑 대왕고슴도치왕 👑" 회전 텍스트 링 -->
+        <a-entity
+          animation="property: rotation; to: 0 360 0; loop: true; dur: 6500; easing: linear;">
+          <!-- 3방향 120도 간격으로 배치하여 대왕 고슴도치 몸체를 사방에서 감싸며 회전 -->
+          <a-entity position="0 0.3 2.5">
+            <a-plane width="5.2" height="1.3" king-text-sign></a-plane>
+          </a-entity>
+          <a-entity position="2.165 0.3 -1.25" rotation="0 120 0">
+            <a-plane width="5.2" height="1.3" king-text-sign></a-plane>
+          </a-entity>
+          <a-entity position="-2.165 0.3 -1.25" rotation="0 240 0">
+            <a-plane width="5.2" height="1.3" king-text-sign></a-plane>
+          </a-entity>
+        </a-entity>
+
+        <!-- 플레이어 카메라 앵커: 처음 접속 시 1인칭(내가 대왕고슴도치), 우클릭 시 제3자 시점 -->
+        <a-entity id="camera-anchor" position="0 0.5 1.1">
+          <a-camera id="player-camera" position="0 0 0" look-controls="pointerLockEnabled: false" wheel-zoom></a-camera>
+        </a-entity>
+      </a-entity>
+
+      <!-- 2. 원경 배경에 떠서 천천히 빙글빙글 회전하는 초대형 네온 문구들 -->
+      <a-entity position="0 7.5 -11"
+        animation="property: rotation; to: 10 360 -5; loop: true; dur: 16000; easing: linear;">
+        <a-plane width="13" height="3.25" neon-text-sign></a-plane>
+      </a-entity>
+      <a-entity position="0 7.5 11"
+        animation="property: rotation; to: -10 540 5; loop: true; dur: 19000; easing: linear;">
+        <a-plane width="13" height="3.25" neon-text-sign></a-plane>
+      </a-entity>
+
+      <!-- ==================== 30마리 고슴도치 & 20개 별들의 공전 은하계 ==================== -->
+      <a-entity id="galaxy-universe" position="0 0 0" roaming-stars>
+
+<!-- 1번 고슴도치 (각도: 0°, 반경: 2.2m) -->
+        <a-entity
+          rotation='-35 0 -30'
+          animation='property: rotation; to: -35 360 -30; loop: true; dur: 4000; easing: linear;'
+        >
+          <a-entity
+            gltf-model='#hedgehog-model'
+            random-chair-color='index: 0'
+            position='2.2 -0.7 0'
+            scale='0.42 0.42 0.42'
+            animation='property: rotation; to: 0 360 0; loop: true; dur: 1800; easing: linear;'
+          ></a-entity>
+        </a-entity>
+        <!-- 2번 고슴도치 (각도: 12°, 반경: 3m) -->
+        <a-entity
+          rotation='-18 12 -7'
+          animation='property: rotation; to: -18 372 -7; loop: true; dur: 5220; easing: linear;'
+        >
+          <a-entity
+            gltf-model='#hedgehog-model'
+            random-chair-color='index: 1'
+            position='3 -0.04 0'
+            scale='0.77 0.77 0.77'
+            animation='property: rotation; to: 0 360 0; loop: true; dur: 2250; easing: linear;'
+          ></a-entity>
+        </a-entity>
+        <!-- 3번 고슴도치 (각도: 24°, 반경: 3.8m) -->
+        <a-entity
+          rotation='-1 24 16'
+          animation='property: rotation; to: -1 384 16; loop: true; dur: 6440; easing: linear;'
+        >
+          <a-entity
+            gltf-model='#hedgehog-model'
+            random-chair-color='index: 2'
+            position='3.8 0.62 0'
+            scale='0.7 0.7 0.7'
+            animation='property: rotation; to: 0 360 0; loop: true; dur: 2700; easing: linear;'
+          ></a-entity>
+        </a-entity>
+        <!-- 4번 고슴도치 (각도: 36°, 반경: 4.6m) -->
+        <a-entity
+          rotation='16 36 -22'
+          animation='property: rotation; to: 16 -324 -22; loop: true; dur: 7660; easing: linear;'
+        >
+          <a-entity
+            gltf-model='#hedgehog-model'
+            random-chair-color='index: 3'
+            position='4.6 -0.26 0'
+            scale='0.63 0.63 0.63'
+            animation='property: rotation; to: 0 360 0; loop: true; dur: 3150; easing: linear;'
+          ></a-entity>
+        </a-entity>
+        <!-- 5번 고슴도치 (각도: 48°, 반경: 5.4m) -->
+        <a-entity
+          rotation='33 48 1'
+          animation='property: rotation; to: 33 408 1; loop: true; dur: 8880; easing: linear;'
+        >
+          <a-entity
+            gltf-model='#hedgehog-model'
+            random-chair-color='index: 4'
+            position='5.4 0.4 0'
+            scale='0.56 0.56 0.56'
+            animation='property: rotation; to: 0 360 0; loop: true; dur: 3600; easing: linear;'
+          ></a-entity>
+        </a-entity>
+        <!-- 6번 고슴도치 (각도: 60°, 반경: 6.2m) -->
+        <a-entity
+          rotation='-21 60 24'
+          animation='property: rotation; to: -21 420 24; loop: true; dur: 10100; easing: linear;'
+        >
+          <a-entity
+            gltf-model='#hedgehog-model'
+            random-chair-color='index: 5'
+            position='6.2 -0.48 0'
+            scale='0.49 0.49 0.49'
+            animation='property: rotation; to: 0 360 0; loop: true; dur: 4050; easing: linear;'
+          ></a-entity>
+        </a-entity>
+        <!-- 7번 고슴도치 (각도: 72°, 반경: 7m) -->
+        <a-entity
+          rotation='-4 72 -14'
+          animation='property: rotation; to: -4 432 -14; loop: true; dur: 11320; easing: linear;'
+        >
+          <a-entity
+            gltf-model='#hedgehog-model'
+            random-chair-color='index: 6'
+            position='7 0.18 0'
+            scale='0.42 0.42 0.42'
+            animation='property: rotation; to: 0 360 0; loop: true; dur: 1800; easing: linear;'
+          ></a-entity>
+        </a-entity>
+        <!-- 8번 고슴도치 (각도: 84°, 반경: 7.8m) -->
+        <a-entity
+          rotation='13 84 9'
+          animation='property: rotation; to: 13 444 9; loop: true; dur: 12540; easing: linear;'
+        >
+          <a-entity
+            gltf-model='#hedgehog-model'
+            random-chair-color='index: 7'
+            position='7.8 -0.7 0'
+            scale='0.77 0.77 0.77'
+            animation='property: rotation; to: 0 360 0; loop: true; dur: 2250; easing: linear;'
+          ></a-entity>
+        </a-entity>
+        <!-- 9번 고슴도치 (각도: 96°, 반경: 2.6m) -->
+        <a-entity
+          rotation='30 96 -29'
+          animation='property: rotation; to: 30 -264 -29; loop: true; dur: 13760; easing: linear;'
+        >
+          <a-entity
+            gltf-model='#hedgehog-model'
+            random-chair-color='index: 8'
+            position='2.6 -0.04 0'
+            scale='0.7 0.7 0.7'
+            animation='property: rotation; to: 0 360 0; loop: true; dur: 2700; easing: linear;'
+          ></a-entity>
+        </a-entity>
+        <!-- 10번 고슴도치 (각도: 108°, 반경: 3.4m) -->
+        <a-entity
+          rotation='-24 108 -6'
+          animation='property: rotation; to: -24 468 -6; loop: true; dur: 5080; easing: linear;'
+        >
+          <a-entity
+            gltf-model='#hedgehog-model'
+            random-chair-color='index: 9'
+            position='3.4 0.62 0'
+            scale='0.63 0.63 0.63'
+            animation='property: rotation; to: 0 360 0; loop: true; dur: 3150; easing: linear;'
+          ></a-entity>
+        </a-entity>
+        <!-- 11번 고슴도치 (각도: 120°, 반경: 4.2m) -->
+        <a-entity
+          rotation='-7 120 17'
+          animation='property: rotation; to: -7 480 17; loop: true; dur: 6300; easing: linear;'
+        >
+          <a-entity
+            gltf-model='#hedgehog-model'
+            random-chair-color='index: 10'
+            position='4.2 -0.26 0'
+            scale='0.56 0.56 0.56'
+            animation='property: rotation; to: 0 360 0; loop: true; dur: 3600; easing: linear;'
+          ></a-entity>
+        </a-entity>
+        <!-- 12번 고슴도치 (각도: 132°, 반경: 5m) -->
+        <a-entity
+          rotation='10 132 -21'
+          animation='property: rotation; to: 10 492 -21; loop: true; dur: 7520; easing: linear;'
+        >
+          <a-entity
+            gltf-model='#hedgehog-model'
+            random-chair-color='index: 11'
+            position='5 0.4 0'
+            scale='0.49 0.49 0.49'
+            animation='property: rotation; to: 0 360 0; loop: true; dur: 4050; easing: linear;'
+          ></a-entity>
+        </a-entity>
+        <!-- 13번 고슴도치 (각도: 144°, 반경: 5.8m) -->
+        <a-entity
+          rotation='27 144 2'
+          animation='property: rotation; to: 27 504 2; loop: true; dur: 8740; easing: linear;'
+        >
+          <a-entity
+            gltf-model='#hedgehog-model'
+            random-chair-color='index: 12'
+            position='5.8 -0.48 0'
+            scale='0.42 0.42 0.42'
+            animation='property: rotation; to: 0 360 0; loop: true; dur: 1800; easing: linear;'
+          ></a-entity>
+        </a-entity>
+        <!-- 14번 고슴도치 (각도: 156°, 반경: 6.6m) -->
+        <a-entity
+          rotation='-27 156 25'
+          animation='property: rotation; to: -27 -204 25; loop: true; dur: 9960; easing: linear;'
+        >
+          <a-entity
+            gltf-model='#hedgehog-model'
+            random-chair-color='index: 13'
+            position='6.6 0.18 0'
+            scale='0.77 0.77 0.77'
+            animation='property: rotation; to: 0 360 0; loop: true; dur: 2250; easing: linear;'
+          ></a-entity>
+        </a-entity>
+        <!-- 15번 고슴도치 (각도: 168°, 반경: 7.4m) -->
+        <a-entity
+          rotation='-10 168 -13'
+          animation='property: rotation; to: -10 528 -13; loop: true; dur: 11180; easing: linear;'
+        >
+          <a-entity
+            gltf-model='#hedgehog-model'
+            random-chair-color='index: 14'
+            position='7.4 -0.7 0'
+            scale='0.7 0.7 0.7'
+            animation='property: rotation; to: 0 360 0; loop: true; dur: 2700; easing: linear;'
+          ></a-entity>
+        </a-entity>
+        <!-- 16번 고슴도치 (각도: 180°, 반경: 8.2m) -->
+        <a-entity
+          rotation='7 180 10'
+          animation='property: rotation; to: 7 540 10; loop: true; dur: 12400; easing: linear;'
+        >
+          <a-entity
+            gltf-model='#hedgehog-model'
+            random-chair-color='index: 15'
+            position='8.2 -0.04 0'
+            scale='0.63 0.63 0.63'
+            animation='property: rotation; to: 0 360 0; loop: true; dur: 3150; easing: linear;'
+          ></a-entity>
+        </a-entity>
+        <!-- 17번 고슴도치 (각도: 192°, 반경: 3m) -->
+        <a-entity
+          rotation='24 192 -28'
+          animation='property: rotation; to: 24 552 -28; loop: true; dur: 13620; easing: linear;'
+        >
+          <a-entity
+            gltf-model='#hedgehog-model'
+            random-chair-color='index: 16'
+            position='3 0.62 0'
+            scale='0.56 0.56 0.56'
+            animation='property: rotation; to: 0 360 0; loop: true; dur: 3600; easing: linear;'
+          ></a-entity>
+        </a-entity>
+        <!-- 18번 고슴도치 (각도: 204°, 반경: 3.8m) -->
+        <a-entity
+          rotation='-30 204 -5'
+          animation='property: rotation; to: -30 564 -5; loop: true; dur: 14840; easing: linear;'
+        >
+          <a-entity
+            gltf-model='#hedgehog-model'
+            random-chair-color='index: 17'
+            position='3.8 -0.26 0'
+            scale='0.49 0.49 0.49'
+            animation='property: rotation; to: 0 360 0; loop: true; dur: 4050; easing: linear;'
+          ></a-entity>
+        </a-entity>
+        <!-- 19번 고슴도치 (각도: 216°, 반경: 4.6m) -->
+        <a-entity
+          rotation='-13 216 18'
+          animation='property: rotation; to: -13 -144 18; loop: true; dur: 6160; easing: linear;'
+        >
+          <a-entity
+            gltf-model='#hedgehog-model'
+            random-chair-color='index: 18'
+            position='4.6 0.4 0'
+            scale='0.42 0.42 0.42'
+            animation='property: rotation; to: 0 360 0; loop: true; dur: 1800; easing: linear;'
+          ></a-entity>
+        </a-entity>
+        <!-- 20번 고슴도치 (각도: 228°, 반경: 5.4m) -->
+        <a-entity
+          rotation='4 228 -20'
+          animation='property: rotation; to: 4 588 -20; loop: true; dur: 7380; easing: linear;'
+        >
+          <a-entity
+            gltf-model='#hedgehog-model'
+            random-chair-color='index: 19'
+            position='5.4 -0.48 0'
+            scale='0.77 0.77 0.77'
+            animation='property: rotation; to: 0 360 0; loop: true; dur: 2250; easing: linear;'
+          ></a-entity>
+        </a-entity>
+        <!-- 21번 고슴도치 (각도: 240°, 반경: 6.2m) -->
+        <a-entity
+          rotation='21 240 3'
+          animation='property: rotation; to: 21 600 3; loop: true; dur: 8600; easing: linear;'
+        >
+          <a-entity
+            gltf-model='#hedgehog-model'
+            random-chair-color='index: 20'
+            position='6.2 0.18 0'
+            scale='0.7 0.7 0.7'
+            animation='property: rotation; to: 0 360 0; loop: true; dur: 2700; easing: linear;'
+          ></a-entity>
+        </a-entity>
+        <!-- 22번 고슴도치 (각도: 252°, 반경: 7m) -->
+        <a-entity
+          rotation='-33 252 26'
+          animation='property: rotation; to: -33 612 26; loop: true; dur: 9820; easing: linear;'
+        >
+          <a-entity
+            gltf-model='#hedgehog-model'
+            random-chair-color='index: 21'
+            position='7 -0.7 0'
+            scale='0.63 0.63 0.63'
+            animation='property: rotation; to: 0 360 0; loop: true; dur: 3150; easing: linear;'
+          ></a-entity>
+        </a-entity>
+        <!-- 23번 고슴도치 (각도: 264°, 반경: 7.8m) -->
+        <a-entity
+          rotation='-16 264 -12'
+          animation='property: rotation; to: -16 624 -12; loop: true; dur: 11040; easing: linear;'
+        >
+          <a-entity
+            gltf-model='#hedgehog-model'
+            random-chair-color='index: 22'
+            position='7.8 -0.04 0'
+            scale='0.56 0.56 0.56'
+            animation='property: rotation; to: 0 360 0; loop: true; dur: 3600; easing: linear;'
+          ></a-entity>
+        </a-entity>
+        <!-- 24번 고슴도치 (각도: 276°, 반경: 8.6m) -->
+        <a-entity
+          rotation='1 276 11'
+          animation='property: rotation; to: 1 -84 11; loop: true; dur: 12260; easing: linear;'
+        >
+          <a-entity
+            gltf-model='#hedgehog-model'
+            random-chair-color='index: 23'
+            position='8.6 0.62 0'
+            scale='0.49 0.49 0.49'
+            animation='property: rotation; to: 0 360 0; loop: true; dur: 4050; easing: linear;'
+          ></a-entity>
+        </a-entity>
+        <!-- 25번 고슴도치 (각도: 288°, 반경: 3.4m) -->
+        <a-entity
+          rotation='18 288 -27'
+          animation='property: rotation; to: 18 648 -27; loop: true; dur: 13480; easing: linear;'
+        >
+          <a-entity
+            gltf-model='#hedgehog-model'
+            random-chair-color='index: 24'
+            position='3.4 -0.26 0'
+            scale='0.42 0.42 0.42'
+            animation='property: rotation; to: 0 360 0; loop: true; dur: 1800; easing: linear;'
+          ></a-entity>
+        </a-entity>
+        <!-- 26번 고슴도치 (각도: 300°, 반경: 4.2m) -->
+        <a-entity
+          rotation='35 300 -4'
+          animation='property: rotation; to: 35 660 -4; loop: true; dur: 14700; easing: linear;'
+        >
+          <a-entity
+            gltf-model='#hedgehog-model'
+            random-chair-color='index: 25'
+            position='4.2 0.4 0'
+            scale='0.77 0.77 0.77'
+            animation='property: rotation; to: 0 360 0; loop: true; dur: 2250; easing: linear;'
+          ></a-entity>
+        </a-entity>
+        <!-- 27번 고슴도치 (각도: 312°, 반경: 5m) -->
+        <a-entity
+          rotation='-19 312 19'
+          animation='property: rotation; to: -19 672 19; loop: true; dur: 15920; easing: linear;'
+        >
+          <a-entity
+            gltf-model='#hedgehog-model'
+            random-chair-color='index: 26'
+            position='5 -0.48 0'
+            scale='0.7 0.7 0.7'
+            animation='property: rotation; to: 0 360 0; loop: true; dur: 2700; easing: linear;'
+          ></a-entity>
+        </a-entity>
+        <!-- 28번 고슴도치 (각도: 324°, 반경: 5.8m) -->
+        <a-entity
+          rotation='-2 324 -19'
+          animation='property: rotation; to: -2 684 -19; loop: true; dur: 7240; easing: linear;'
+        >
+          <a-entity
+            gltf-model='#hedgehog-model'
+            random-chair-color='index: 27'
+            position='5.8 0.18 0'
+            scale='0.63 0.63 0.63'
+            animation='property: rotation; to: 0 360 0; loop: true; dur: 3150; easing: linear;'
+          ></a-entity>
+        </a-entity>
+        <!-- 29번 고슴도치 (각도: 336°, 반경: 6.6m) -->
+        <a-entity
+          rotation='15 336 4'
+          animation='property: rotation; to: 15 -24 4; loop: true; dur: 8460; easing: linear;'
+        >
+          <a-entity
+            gltf-model='#hedgehog-model'
+            random-chair-color='index: 28'
+            position='6.6 -0.7 0'
+            scale='0.56 0.56 0.56'
+            animation='property: rotation; to: 0 360 0; loop: true; dur: 3600; easing: linear;'
+          ></a-entity>
+        </a-entity>
+        <!-- 30번 고슴도치 (각도: 348°, 반경: 7.4m) -->
+        <a-entity
+          rotation='32 348 27'
+          animation='property: rotation; to: 32 708 27; loop: true; dur: 9680; easing: linear;'
+        >
+          <a-entity
+            gltf-model='#hedgehog-model'
+            random-chair-color='index: 29'
+            position='7.4 -0.04 0'
+            scale='0.49 0.49 0.49'
+            animation='property: rotation; to: 0 360 0; loop: true; dur: 4050; easing: linear;'
+          ></a-entity>
+        </a-entity>
+      </a-entity>
+    </a-scene>
+  </body>
+</html>
